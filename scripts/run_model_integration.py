@@ -12,12 +12,17 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "model_integration"
 PROCESSED_DIR = PROJECT_ROOT / "outputs" / "processed"
 OPTUNA_DIR = PROJECT_ROOT / "outputs" / "optuna"
+DEFAULT_SEQ_LEN = 14
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -34,8 +39,9 @@ from modeling.models import train_all_models  # noqa: E402
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--top-k", nargs="+", type=int, default=[5, 10, 14, 85])
+    parser.add_argument("--top-k", nargs="+", type=int, default=[5, 8, 10, 11, 12, 14, 15, 20, 85])
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
+    parser.add_argument("--seq-len", type=int, default=DEFAULT_SEQ_LEN)
     parser.add_argument("--skip-plots", action="store_true")
     return parser.parse_args()
 
@@ -81,13 +87,179 @@ def scale_target(y_train_raw: np.ndarray, y_val_raw: np.ndarray, y_test_raw: np.
     )
 
 
+def make_persistence_prediction(y_val_raw: np.ndarray, y_test_raw: np.ndarray, target_mean: float, target_std: float) -> np.ndarray:
+    """Use yesterday's raw AQI as today's prediction, then map it to target z-score space."""
+    y_val_raw = np.asarray(y_val_raw, dtype=np.float32).flatten()
+    y_test_raw = np.asarray(y_test_raw, dtype=np.float32).flatten()
+    if len(y_test_raw) == 0:
+        return np.array([], dtype=np.float32)
+    pred_raw = np.empty_like(y_test_raw, dtype=np.float32)
+    pred_raw[0] = y_val_raw[-1] if len(y_val_raw) else y_test_raw[0]
+    pred_raw[1:] = y_test_raw[:-1]
+    return ((pred_raw - target_mean) / target_std).astype(np.float32)
+
+
+def align_results_to_common_window(
+    results: Dict[str, Dict[str, object]],
+    y_test: np.ndarray,
+    seq_len: int,
+) -> Tuple[Dict[str, Dict[str, object]], np.ndarray]:
+    """Crop every model to the same test dates used by LSTM sequences."""
+    offset = seq_len - 1
+    y_eval = np.asarray(y_test).flatten()[offset:]
+    expected_len = len(y_eval)
+    aligned: Dict[str, Dict[str, object]] = {}
+
+    for name, info in results.items():
+        pred = np.asarray(info.get("test_pred", []), dtype=np.float32).flatten()
+        if len(pred) == len(y_test):
+            pred_eval = pred[offset:]
+        elif len(pred) == expected_len:
+            pred_eval = pred
+        elif len(pred) > expected_len:
+            pred_eval = pred[-expected_len:]
+        else:
+            raise ValueError(
+                f"{name} prediction length {len(pred)} cannot align to common test window {expected_len}."
+            )
+
+        aligned_info = dict(info)
+        aligned_info["test_pred"] = pred_eval
+        aligned_info["_y_test"] = y_eval
+        aligned_info["_eval_offset"] = offset
+        aligned[name] = aligned_info
+
+    return aligned, y_eval
+
+
+def _raw_pair(info: Dict[str, object], target_mean: float, target_std: float) -> Tuple[np.ndarray, np.ndarray]:
+    y_true = inverse_transform_target(np.asarray(info["_y_test"]).flatten(), target_mean, target_std)
+    y_pred = inverse_transform_target(np.asarray(info["test_pred"]).flatten(), target_mean, target_std)
+    n = min(len(y_true), len(y_pred))
+    return y_true[:n], y_pred[:n]
+
+
+def make_peak_error_summary(
+    results: Dict[str, Dict[str, object]],
+    target_mean: float,
+    target_std: float,
+) -> pd.DataFrame:
+    """Summarize overall and high-AQI errors for every model."""
+    rows = []
+    for name, info in results.items():
+        y_true, y_pred = _raw_pair(info, target_mean, target_std)
+        mask = ~(np.isnan(y_true) | np.isnan(y_pred))
+        y_true, y_pred = y_true[mask], y_pred[mask]
+        if len(y_true) == 0:
+            continue
+        residual = y_true - y_pred
+        abs_err = np.abs(residual)
+        q75 = np.quantile(y_true, 0.75)
+        top_q_mask = y_true >= q75
+        high_mask = y_true >= 150
+        rows.append(
+            {
+                "Model": name,
+                "N_Test": int(len(y_true)),
+                "RMSE_AQI": float(np.sqrt(np.mean(residual**2))),
+                "MAE_AQI": float(np.mean(abs_err)),
+                "Top25_AQI_MAE": float(np.mean(abs_err[top_q_mask])) if top_q_mask.any() else np.nan,
+                "AQI_ge_150_MAE": float(np.mean(abs_err[high_mask])) if high_mask.any() else np.nan,
+                "AQI_ge_150_N": int(high_mask.sum()),
+                "Mean_Residual_AQI": float(np.mean(residual)),
+                "Max_Abs_Error_AQI": float(np.max(abs_err)),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("RMSE_AQI")
+
+
+def _configure_plot_style() -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": [
+                "Noto Sans CJK SC",
+                "Noto Sans CJK JP",
+                "Noto Sans CJK TC",
+                "Microsoft YaHei",
+                "SimHei",
+                "Arial Unicode MS",
+                "DejaVu Sans",
+            ],
+            "axes.unicode_minus": False,
+        }
+    )
+
+
+def plot_peak_error_bins(
+    results: Dict[str, Dict[str, object]],
+    best_name: str,
+    target_mean: float,
+    target_std: float,
+    save_path: Path,
+) -> None:
+    """Plot MAE by actual-AQI bin for the selected best model."""
+    _configure_plot_style()
+    y_true, y_pred = _raw_pair(results[best_name], target_mean, target_std)
+    df = pd.DataFrame({"actual": y_true, "abs_error": np.abs(y_true - y_pred)})
+    bins = [0, 50, 100, 150, 200, np.inf]
+    labels = ["0-50", "50-100", "100-150", "150-200", "200+"]
+    df["AQI区间"] = pd.cut(df["actual"], bins=bins, labels=labels, right=False)
+    summary = df.groupby("AQI区间", observed=False).agg(MAE=("abs_error", "mean"), Count=("abs_error", "size")).reset_index()
+
+    fig, ax1 = plt.subplots(figsize=(8.5, 4.8))
+    ax1.bar(summary["AQI区间"].astype(str), summary["MAE"], color="#5d8aa8", label="MAE")
+    ax1.set_title(f"{best_name} 不同真实 AQI 区间的误差")
+    ax1.set_xlabel("真实 AQI 区间")
+    ax1.set_ylabel("MAE (AQI)")
+    ax2 = ax1.twinx()
+    ax2.plot(summary["AQI区间"].astype(str), summary["Count"], color="#b23a30", marker="o", label="样本数")
+    ax2.set_ylabel("样本数")
+    fig.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_top_error_dates(
+    results: Dict[str, Dict[str, object]],
+    best_name: str,
+    dates: pd.DatetimeIndex,
+    target_mean: float,
+    target_std: float,
+    save_path: Path,
+    top_n: int = 15,
+) -> None:
+    """Plot the dates with largest absolute errors for the selected best model."""
+    _configure_plot_style()
+    info = results[best_name]
+    offset = int(info.get("_eval_offset", 0))
+    y_true, y_pred = _raw_pair(info, target_mean, target_std)
+    plot_dates = pd.to_datetime(pd.Index(dates))[offset : offset + len(y_true)]
+    df = pd.DataFrame({"date": plot_dates, "actual": y_true, "pred": y_pred})
+    df["abs_error"] = np.abs(df["actual"] - df["pred"])
+    top = df.sort_values("abs_error", ascending=False).head(top_n).sort_values("abs_error")
+    labels = top["date"].dt.strftime("%Y-%m-%d")
+
+    fig, ax = plt.subplots(figsize=(9.5, 5.8))
+    ax.barh(labels, top["abs_error"], color="#c08a5a")
+    ax.set_title(f"{best_name} 绝对误差最大的日期 Top {top_n}")
+    ax.set_xlabel("绝对误差 (AQI)")
+    for idx, (_, row) in enumerate(top.iterrows()):
+        ax.text(row["abs_error"], idx, f" 真{row['actual']:.0f}/预{row['pred']:.0f}", va="center", fontsize=8)
+    fig.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def save_best_plots(results: Dict[str, Dict[str, object]], best_name: str, y_test: np.ndarray, dates: pd.DatetimeIndex, target_mean: float, target_std: float, fig_dir: Path) -> None:
     info = results[best_name]
     pred = np.asarray(info["test_pred"]).flatten()
     yt = np.asarray(info.get("_y_test", y_test)).flatten()
     plot_dates = dates
     if "_y_test" in info:
-        offset = len(y_test) - len(yt)
+        offset = int(info.get("_eval_offset", len(y_test) - len(yt)))
         plot_dates = dates[offset:]
     n = min(len(yt), len(pred), len(plot_dates))
     y_true_raw = inverse_transform_target(yt[:n], target_mean, target_std)
@@ -96,7 +268,13 @@ def save_best_plots(results: Dict[str, Dict[str, object]], best_name: str, y_tes
     make_residual_plot(yt[:n], pred[:n], best_name, str(fig_dir / f"residual_{best_name}.png"), target_mean=target_mean, target_std=target_std, dates=plot_dates[:n])
 
 
-def run_one_dimension(top_k: int, package: Dict[str, object], device: str, skip_plots: bool) -> Tuple[pd.DataFrame, Dict[str, object]]:
+def run_one_dimension(
+    top_k: int,
+    package: Dict[str, object],
+    device: str,
+    skip_plots: bool,
+    seq_len: int,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
     features = load_recommended_features(top_k)
     split_dir = OUTPUT_DIR / f"top{top_k}"
     result_dir = split_dir / "results"
@@ -112,11 +290,28 @@ def run_one_dimension(top_k: int, package: Dict[str, object], device: str, skip_
     print("\n" + "=" * 80)
     print(f"[Model] top{top_k}: X_train={X_train.shape}, X_val={X_val.shape}, X_test={X_test.shape}, device={device}")
     print("=" * 80)
-    results = train_all_models(X_train, y_train, X_val, y_val, X_test, y_test, device=device)
-    comparison = build_comparison_table(results, y_test, target_mean, target_std)
+    results = train_all_models(X_train, y_train, X_val, y_val, X_test, y_test, device=device, seq_len=seq_len)
+    if "M1_Persistence" in results:
+        # M1 is a raw AQI baseline: yesterday's observed AQI predicts today's AQI.
+        # This avoids treating an arbitrary standardized top-k feature column as the target.
+        results["M1_Persistence"]["test_pred"] = make_persistence_prediction(y_val_raw, y_test_raw, target_mean, target_std)
+
+    mixed_comparison = build_comparison_table(results, y_test, target_mean, target_std)
+    mixed_comparison.insert(0, "top_k", top_k)
+    mixed_comparison.insert(1, "feature_count", len(features))
+    mixed_comparison.to_csv(result_dir / f"model_comparison_mixed_top{top_k}.csv", index=False, encoding="utf-8-sig")
+
+    aligned_results, y_eval = align_results_to_common_window(results, y_test, seq_len=seq_len)
+    comparison = build_comparison_table(aligned_results, y_eval, target_mean, target_std)
     comparison.insert(0, "top_k", top_k)
     comparison.insert(1, "feature_count", len(features))
     comparison.to_csv(result_dir / f"model_comparison_top{top_k}.csv", index=False, encoding="utf-8-sig")
+
+    peak_summary = make_peak_error_summary(aligned_results, target_mean, target_std)
+    peak_summary.insert(0, "top_k", top_k)
+    peak_summary.insert(1, "feature_count", len(features))
+    peak_summary.to_csv(result_dir / f"peak_error_summary_top{top_k}.csv", index=False, encoding="utf-8-sig")
+
     pd.DataFrame({"feature": features}).to_csv(result_dir / f"features_top{top_k}.csv", index=False, encoding="utf-8-sig")
     with open(result_dir / "target_scaler_info.json", "w", encoding="utf-8") as f:
         json.dump({"target_mean_AQI_train": target_mean, "target_std_AQI_train": target_std}, f, ensure_ascii=False, indent=2)
@@ -126,18 +321,42 @@ def run_one_dimension(top_k: int, package: Dict[str, object], device: str, skip_
         plot_model_comparison(
             comparison,
             str(fig_dir / f"model_comparison_top{top_k}.png"),
-            title=f"接入我的特征工程 top{top_k} 后的模型表现对比",
+            title=f"接入我的特征工程 top{top_k} 后的模型表现对比（统一测试窗口）",
         )
-        save_best_plots(results, str(best["Model"]), y_test, package["test"].index, target_mean, target_std, fig_dir)
+        save_best_plots(aligned_results, str(best["Model"]), y_test, package["test"].index, target_mean, target_std, fig_dir)
+        plot_peak_error_bins(
+            aligned_results,
+            str(best["Model"]),
+            target_mean,
+            target_std,
+            fig_dir / f"peak_error_bins_{best['Model']}.png",
+        )
+        plot_top_error_dates(
+            aligned_results,
+            str(best["Model"]),
+            package["test"].index,
+            target_mean,
+            target_std,
+            fig_dir / f"top_error_dates_{best['Model']}.png",
+        )
     print(f"[Model] top{top_k} best={best['Model']} RMSE={best['RMSE_AQI']:.4f} MAE={best['MAE_AQI']:.4f} R2={best['R2']:.4f}")
-    return comparison, best
+    return comparison, mixed_comparison, peak_summary, best
 
 
-def write_summary(all_tables: List[pd.DataFrame], best_rows: List[Dict[str, object]]) -> None:
+def write_summary(
+    all_tables: List[pd.DataFrame],
+    mixed_tables: List[pd.DataFrame],
+    peak_tables: List[pd.DataFrame],
+    best_rows: List[Dict[str, object]],
+) -> None:
     result_dir = OUTPUT_DIR / "results"
     result_dir.mkdir(parents=True, exist_ok=True)
     all_results = pd.concat(all_tables, ignore_index=True)
     all_results.to_csv(result_dir / "all_model_comparison_my_features.csv", index=False, encoding="utf-8-sig")
+    all_mixed = pd.concat(mixed_tables, ignore_index=True)
+    all_mixed.to_csv(result_dir / "all_model_comparison_mixed_my_features.csv", index=False, encoding="utf-8-sig")
+    all_peak = pd.concat(peak_tables, ignore_index=True)
+    all_peak.to_csv(result_dir / "all_peak_error_summary.csv", index=False, encoding="utf-8-sig")
     best_df = pd.DataFrame(best_rows).sort_values("RMSE_AQI")
     best_df.to_csv(result_dir / "best_by_dimension.csv", index=False, encoding="utf-8-sig")
     readme = [
@@ -164,12 +383,16 @@ def main() -> None:
 
     package = load_feature_package(PROCESSED_DIR)
     all_tables: List[pd.DataFrame] = []
+    mixed_tables: List[pd.DataFrame] = []
+    peak_tables: List[pd.DataFrame] = []
     best_rows: List[Dict[str, object]] = []
     for top_k in args.top_k:
-        table, best = run_one_dimension(top_k, package, args.device, args.skip_plots)
+        table, mixed_table, peak_table, best = run_one_dimension(top_k, package, args.device, args.skip_plots, args.seq_len)
         all_tables.append(table)
+        mixed_tables.append(mixed_table)
+        peak_tables.append(peak_table)
         best_rows.append(best)
-    write_summary(all_tables, best_rows)
+    write_summary(all_tables, mixed_tables, peak_tables, best_rows)
     print(f"\n[Model] integration outputs: {OUTPUT_DIR}")
 
 

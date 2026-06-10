@@ -2,7 +2,7 @@
 =============================================================================
 模型模块 (Models)
 =============================================================================
-包含全部 10 个模型的实现:
+包含全部模型的实现:
 
   [统计基准] M1: 持久性模型 (Persistence)
   [线性方法] M2: 岭回归 (Ridge)
@@ -13,6 +13,7 @@
   [树集成]   M7: CatBoost
   [神经网络] M8: 多层感知机 (MLP)
   [深度学习] M9: BiLSTM + Attention
+  [深度学习] M9B: Peak-weighted BiLSTM + Attention
   [集成融合] M10: Stacking 集成 (改进模型)
 =============================================================================
 """
@@ -31,6 +32,14 @@ from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
 from catboost import CatBoostRegressor
 from typing import Dict, Tuple, Optional
+
+
+def set_torch_seed(seed: int = 42) -> None:
+    """Keep neural-network runs reproducible across Colab executions."""
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 # =============================================================================
@@ -226,12 +235,12 @@ class BiLSTMAttention(nn.Module):
     """
     双向 LSTM + 加性注意力 (Additive Attention)
 
-    架构: Input(14×7) → BiLSTM(64, 2层) → Attention → Dense(64→32→1)
+    架构: Input(seq_len × top_k_features) → BiLSTM(64, 2层) → Attention → Dense(64→32→1)
 
     设计要点:
     - BiLSTM: 双向编码, 同时捕获过去和未来的上下文 (在已知序列内)
     - Attention: 自适应加权 → 模型自动关注最重要的历史时间步
-    - 输入为 7 维原始污染物序列 (非工程特征) → 让 LSTM 自主学习时序模式
+    - 输入为 top_k 工程特征序列，与传统模型使用同一套无泄漏特征，便于公平比较
     """
 
     def __init__(self, input_dim: int, hidden_dim: int = 64,
@@ -249,7 +258,7 @@ class BiLSTMAttention(nn.Module):
         )
 
     def forward(self, x):
-        """x: [batch, seq_len=14, features=7]"""
+        """x: [batch, seq_len, top_k_features]"""
         lstm_out, _ = self.bilstm(x)  # [B, 14, 128]
 
         # Attention: e_t = v^T · tanh(W · h_t),  α = softmax(e)
@@ -262,40 +271,87 @@ class BiLSTMAttention(nn.Module):
         return self.fc(context).squeeze(-1), attn_w
 
 
-def prepare_sequences(data: np.ndarray, seq_len: int = 14):
+def prepare_sequence_X(X: np.ndarray, seq_len: int = 14) -> np.ndarray:
     """
-    将时序数据组织为监督学习格式。
-    X[i] = data[i : i+seq_len, :]     (seq_len 天 × n_features)
-    y[i] = data[i+seq_len, 0]          (第 seq_len+1 天的目标变量)
+    Build LSTM input sequences from a 2-D feature matrix.
 
-    Returns: X[n_samples-seq_len, seq_len, n_features], y[n_samples-seq_len]
+    The sequence ending at row t predicts y[t]. This matches the feature package:
+    every row's model features are already leak-safe through shift/lag logic.
     """
-    X, y = [], []
-    for i in range(len(data) - seq_len):
-        X.append(data[i:i + seq_len])
-        y.append(data[i + seq_len, 0])
-    return np.array(X, dtype=np.float32), np.array(y, dtype=np.float32)
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim != 2:
+        raise ValueError(f"prepare_sequence_X expects a 2-D array, got shape {X.shape}")
+    if seq_len < 2:
+        raise ValueError("seq_len must be >= 2")
+    if len(X) < seq_len:
+        raise ValueError(f"Need at least seq_len={seq_len} rows, got {len(X)}")
+
+    sequences = []
+    for end_idx in range(seq_len - 1, len(X)):
+        start_idx = end_idx - seq_len + 1
+        sequences.append(X[start_idx : end_idx + 1])
+    return np.asarray(sequences, dtype=np.float32)
+
+
+def prepare_sequence_xy(X: np.ndarray, y: np.ndarray, seq_len: int = 14):
+    """Build `[samples, seq_len, features]` inputs and aligned targets."""
+    X_seq = prepare_sequence_X(X, seq_len=seq_len)
+    y = np.asarray(y, dtype=np.float32).reshape(-1)
+    if len(y) != len(X):
+        raise ValueError(f"X/y length mismatch: len(X)={len(X)}, len(y)={len(y)}")
+    return X_seq, y[seq_len - 1 :].astype(np.float32)
+
+
+def prepare_sequences(data: np.ndarray, seq_len: int = 14):
+    """Backward-compatible wrapper for older callers."""
+    data = np.asarray(data, dtype=np.float32)
+    return prepare_sequence_X(data, seq_len=seq_len), data[seq_len - 1 :, 0].astype(np.float32)
+
+
+def weighted_huber_loss(pred, target, sample_weight=None, delta: float = 1.0):
+    """Huber loss with optional per-sample weights."""
+    error = pred - target
+    abs_error = torch.abs(error)
+    quadratic = torch.minimum(abs_error, torch.tensor(delta, device=pred.device, dtype=pred.dtype))
+    linear = abs_error - quadratic
+    loss = 0.5 * quadratic.pow(2) + delta * linear
+    if sample_weight is not None:
+        loss = loss * sample_weight
+    return loss.mean()
 
 
 def train_bilstm(X_train, y_train, X_val, y_val,
                  seq_len=14, hidden_dim=64, epochs=200,
                  lr=0.001, batch_size=32, patience=20,
-                 device='cpu') -> Tuple[BiLSTMAttention, dict]:
+                 device='cpu', sample_weight_train=None,
+                 seed: int = 42, model_label: str = 'M9 BiLSTM') -> Tuple[BiLSTMAttention, dict]:
     """BiLSTM + Attention 模型训练器"""
-    print(f"\n  [M9 BiLSTM] 训练中 (device={device})...")
+    set_torch_seed(seed)
+    print(f"\n  [{model_label}] training (device={device}, seed={seed})...")
 
     # 准备序列
     if len(X_train.shape) == 2:
-        X_train, y_train = prepare_sequences(X_train, seq_len)
-        X_val, y_val = prepare_sequences(X_val, seq_len)
+        X_train, y_train = prepare_sequence_xy(X_train, y_train, seq_len)
+        X_val, y_val = prepare_sequence_xy(X_val, y_val, seq_len)
+
+    if sample_weight_train is not None:
+        sample_weight_train = np.asarray(sample_weight_train, dtype=np.float32).reshape(-1)
+        if len(sample_weight_train) != len(y_train):
+            sample_weight_train = sample_weight_train[seq_len - 1 :]
+        if len(sample_weight_train) != len(y_train):
+            raise ValueError(
+                f"sample_weight_train length mismatch: {len(sample_weight_train)} vs {len(y_train)}"
+            )
 
     Xt = torch.FloatTensor(X_train).to(device)
     yt = torch.FloatTensor(y_train).to(device)
     Xv = torch.FloatTensor(X_val).to(device)
     yv = torch.FloatTensor(y_val).to(device)
+    wt = torch.FloatTensor(sample_weight_train).to(device) if sample_weight_train is not None else None
+
+    print(f"  [{model_label}] sequence shapes: X_train={tuple(Xt.shape)}, X_val={tuple(Xv.shape)}")
 
     model = BiLSTMAttention(X_train.shape[2], hidden_dim).to(device)
-    criterion = nn.HuberLoss(delta=1.0)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=8
@@ -315,7 +371,8 @@ def train_bilstm(X_train, y_train, X_val, y_val,
             idx = perm[i:i+batch_size]
             optimizer.zero_grad()
             pred, _ = model(Xt[idx])
-            loss = criterion(pred, yt[idx])
+            batch_weight = wt[idx] if wt is not None else None
+            loss = weighted_huber_loss(pred, yt[idx], sample_weight=batch_weight, delta=1.0)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -324,7 +381,7 @@ def train_bilstm(X_train, y_train, X_val, y_val,
         model.eval()
         with torch.no_grad():
             vp, _ = model(Xv)
-            vloss = criterion(vp, yv).item()
+            vloss = weighted_huber_loss(vp, yv, delta=1.0).item()
 
         h['train_loss'].append(np.mean(train_losses))
         h['val_loss'].append(vloss)
@@ -347,14 +404,14 @@ def train_bilstm(X_train, y_train, X_val, y_val,
     train_time = time.time() - t0
     if best_state is not None:
         model.load_state_dict(best_state)
-    print(f"  完成 ({train_time:.1f}s) | Best Val Loss={best_loss:.4f}")
+    print(f"  [{model_label}] done ({train_time:.1f}s) | Best Val Loss={best_loss:.4f}")
     return model, {'train_time': train_time, 'best_val_loss': best_loss, 'history': h}
 
 
 def predict_bilstm(model, X, seq_len=14, device='cpu'):
     """BiLSTM 预测"""
     if len(X.shape) == 2:
-        X, _ = prepare_sequences(X, seq_len)
+        X = prepare_sequence_X(X, seq_len)
     model.eval()
     with torch.no_grad():
         pred, _ = model(torch.FloatTensor(X).to(device))
@@ -465,9 +522,9 @@ class ValidationStackingEnsemble:
 # 统一训练接口
 # =============================================================================
 def train_all_models(X_train, y_train, X_val, y_val, X_test, y_test,
-                     device='cpu') -> Dict:
+                     device='cpu', seq_len: int = 14) -> Dict:
     """
-    训练全部 10 个模型并返回测试集上的预测结果。
+    训练全部模型并返回测试集上的预测结果。
 
     Returns
     -------
@@ -558,38 +615,59 @@ def train_all_models(X_train, y_train, X_val, y_val, X_test, y_test,
 
     # ---- M9: BiLSTM + Attention ----
     print("[M9] BiLSTM + Attention...")
-    raw_cols = ['AQI', 'PM2_5', 'PM10', 'SO2', 'CO', 'NO2', 'O3_8h']
+    y_test_seq = y_test[seq_len - 1 :]
     try:
-        Xt_dl = np.column_stack([y_train, X_train])  # target as col 0
-        Xv_dl = np.column_stack([y_val, X_val])
-        Xte_dl = np.column_stack([y_test, X_test])
-        # Only use raw 7 features for DL
-        # Actually, we already have target as col 0 in Xt_dl
-        # Let's use only raw cols for DL
-
-        # Re-extract raw cols from train_val_test
-        # For simplicity, use first 7 cols which are AQI + 6 pollutants
-        Xt_dl = Xt_dl[:, :7]
-        Xv_dl = Xv_dl[:, :7]
-        Xte_dl = Xte_dl[:, :7]
-
-        m9, m9_hist = train_bilstm(Xt_dl, y_train, Xv_dl, y_val,
-                                   device=device)
-        pred_m9 = predict_bilstm(m9, Xte_dl, device=device)
-        # Align predictions with y_test (sequence preparation removes first seq_len-1 samples)
-        seq_len = 14
+        m9, m9_hist = train_bilstm(
+            X_train, y_train, X_val, y_val,
+            seq_len=seq_len, device=device, seed=42, model_label='M9 BiLSTM'
+        )
+        pred_m9 = predict_bilstm(m9, X_test, seq_len=seq_len, device=device)
         results['M9_BiLSTM'] = {
             'test_pred': pred_m9,
             'train_time': m9_hist['train_time'],
             'type': 'DeepLearning',
-            '_y_test': y_test[seq_len:],  # alignment
+            '_y_test': y_test_seq,
+            '_eval_offset': seq_len - 1,
             'model': m9
         }
     except Exception as e:
         print(f"  [WARNING] BiLSTM 训练失败: {e}")
         results['M9_BiLSTM'] = {
-            'test_pred': np.full(len(y_test), np.nan),
-            'train_time': 0, 'type': 'DeepLearning'
+            'test_pred': np.full(len(y_test_seq), np.nan),
+            'train_time': 0, 'type': 'DeepLearning',
+            '_y_test': y_test_seq,
+            '_eval_offset': seq_len - 1,
+        }
+
+    # ---- M9B: Peak-weighted BiLSTM + Attention ----
+    print("[M9B] Peak-weighted BiLSTM + Attention...")
+    try:
+        q75 = float(np.quantile(y_train, 0.75))
+        peak_weights = np.where(y_train >= q75, 2.0, 1.0).astype(np.float32)
+        m9b, m9b_hist = train_bilstm(
+            X_train, y_train, X_val, y_val,
+            seq_len=seq_len,
+            device=device,
+            sample_weight_train=peak_weights,
+            seed=42,
+            model_label='M9B PeakWeighted BiLSTM',
+        )
+        pred_m9b = predict_bilstm(m9b, X_test, seq_len=seq_len, device=device)
+        results['M9B_BiLSTM_PeakWeighted'] = {
+            'test_pred': pred_m9b,
+            'train_time': m9b_hist['train_time'],
+            'type': 'DeepLearning',
+            '_y_test': y_test_seq,
+            '_eval_offset': seq_len - 1,
+            'model': m9b
+        }
+    except Exception as e:
+        print(f"  [WARNING] Peak-weighted BiLSTM 训练失败: {e}")
+        results['M9B_BiLSTM_PeakWeighted'] = {
+            'test_pred': np.full(len(y_test_seq), np.nan),
+            'train_time': 0, 'type': 'DeepLearning',
+            '_y_test': y_test_seq,
+            '_eval_offset': seq_len - 1,
         }
 
     # ---- M10: Stacking Ensemble ----

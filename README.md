@@ -5,8 +5,9 @@
 - 2013-2019 年每日空气质量原始数据；
 - 无泄漏数据处理与特征工程；
 - Optuna 特征维度搜索；
-- `top5/top10/top_best/top14/top85` 推荐对接维度；
+- `top5/top8/top10/top_best/top12/top14/top15/top20/top85` 推荐对接维度；
 - 模型同学的多模型接入实验；
+- 修复后的 BiLSTM `[样本数, 14, top_k]` 输入与峰值加权 BiLSTM；
 - 中文图表与评估结果输出。
 
 ## Colab 推荐用法
@@ -58,6 +59,8 @@ outputs/model_integration/  模型接入结果、预测图、残差图
 outputs/optuna/recommended_dimension_results.csv
 outputs/model_integration/results/best_by_dimension.csv
 outputs/model_integration/results/all_model_comparison_my_features.csv
+outputs/model_integration/results/all_model_comparison_mixed_my_features.csv
+outputs/model_integration/results/all_peak_error_summary.csv
 ```
 
 ## 输入形状
@@ -87,7 +90,7 @@ python scripts/run_feature_pipeline.py
 只运行模型接入实验，例如本次 Optuna 最优维度为 `top11` 时：
 
 ```bash
-python scripts/run_model_integration.py --device cuda --top-k 5 10 11 14 85
+python scripts/run_model_integration.py --device cuda --top-k 5 8 10 11 12 14 15 20 85 --seq-len 14
 ```
 
 一键运行全部流程：
@@ -96,4 +99,6 @@ python scripts/run_model_integration.py --device cuda --top-k 5 10 11 14 85
 python scripts/run_all.py --device cuda
 ```
 
-`run_all.py` 默认会先读取 Optuna 的 `best_top_k`，再自动跑 `top5/top10/top_best/top14/top85`。
+`run_all.py` 默认会先读取 Optuna 的 `best_top_k`，再自动跑 `top5/top8/top10/top_best/top12/top14/top15/top20/top85`。如需改 LSTM 序列长度，可追加 `--seq-len 14`。
+
+模型主结果使用统一测试窗口：由于 BiLSTM 的 14 天序列需要从测试集第 14 天开始预测，传统模型也会裁剪到同一段测试日期。旧混合口径结果保存在 `model_comparison_mixed_top{k}.csv`，只用于对照。
