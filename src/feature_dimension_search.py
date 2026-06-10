@@ -288,6 +288,8 @@ def build_recommended_dimension_plan(
             {
                 **item,
                 "top_k": top_k,
+                "label": f"top{top_k}",
+                "reason": f"{item['name']}：{item['theory_basis']}",
                 "val_RMSE": float(metric["val_RMSE"]),
                 "val_MAE": float(metric["val_MAE"]),
                 "val_R2": float(metric["val_R2"]),
