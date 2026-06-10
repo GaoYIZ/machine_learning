@@ -40,16 +40,38 @@ RANDOM_STATE = 42
 
 
 def _configure_plots() -> None:
+    sns.set_theme(style="whitegrid", font_scale=0.9)
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
-            "font.sans-serif": ["Microsoft YaHei", "SimHei", "Arial", "DejaVu Sans"],
+            "font.sans-serif": [
+                "Noto Sans CJK SC",
+                "Noto Sans CJK JP",
+                "Noto Sans CJK TC",
+                "Microsoft YaHei",
+                "SimHei",
+                "Arial Unicode MS",
+                "DejaVu Sans",
+            ],
             "axes.unicode_minus": False,
             "figure.dpi": 120,
             "savefig.dpi": 240,
         }
     )
-    sns.set_theme(style="whitegrid", font_scale=0.9)
+
+
+def _category_cn(category: str) -> str:
+    """Translate feature category names for Chinese plot legends."""
+    mapping = {
+        "time": "时间特征",
+        "lag": "滞后特征",
+        "rolling": "移动统计特征",
+        "trend": "趋势特征",
+        "composite": "复合污染特征",
+        "quality_flag": "质量标记特征",
+        "unknown": "未知类别",
+    }
+    return mapping.get(str(category), str(category))
 
 
 def load_data_package(processed_dir: Path = PROCESSED_DIR) -> Dict[str, object]:
@@ -516,10 +538,10 @@ def plot_all_outputs(
     ax.plot(results_df["top_k"], results_df["val_RMSE"], color="#2f6f9f", linewidth=1.8)
     ax.scatter([best_top_k], [results_df.loc[results_df["top_k"] == best_top_k, "val_RMSE"].iloc[0]], color="#b23a30", zorder=5)
     ax.axvline(best_top_k, color="#b23a30", linestyle="--", linewidth=1)
-    ax.set_title("Optuna Top-K Feature Dimension Search: Validation RMSE")
-    ax.set_xlabel("Top-K feature dimension")
-    ax.set_ylabel("Validation RMSE (2018)")
-    ax.text(best_top_k, ax.get_ylim()[0], f" best={best_top_k}", color="#b23a30", va="bottom")
+    ax.set_title("Optuna 特征维度搜索：验证集 RMSE")
+    ax.set_xlabel("Top-K 特征维度")
+    ax.set_ylabel("2018 验证集 RMSE")
+    ax.text(best_top_k, ax.get_ylim()[0], f" 最优维度={best_top_k}", color="#b23a30", va="bottom")
     fig.tight_layout()
     fig.savefig(fig_dir / "topk_rmse_curve.png", bbox_inches="tight")
     plt.close(fig)
@@ -528,12 +550,12 @@ def plot_all_outputs(
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.2))
     axes[0].plot(results_df["top_k"], results_df["val_MAE"], color="#6f8f4e", linewidth=1.6)
     axes[0].axvline(best_top_k, color="#b23a30", linestyle="--", linewidth=1)
-    axes[0].set_title("Validation MAE")
+    axes[0].set_title("验证集 MAE")
     axes[0].set_xlabel("Top-K")
     axes[0].set_ylabel("MAE")
     axes[1].plot(results_df["top_k"], results_df["val_R2"], color="#8d63a9", linewidth=1.6)
     axes[1].axvline(best_top_k, color="#b23a30", linestyle="--", linewidth=1)
-    axes[1].set_title("Validation R2")
+    axes[1].set_title("验证集 R2")
     axes[1].set_xlabel("Top-K")
     axes[1].set_ylabel("R2")
     fig.tight_layout()
@@ -546,18 +568,18 @@ def plot_all_outputs(
         rec["label"] = rec["top_k"].apply(lambda k: f"top{k}")
         fig, axes = plt.subplots(1, 3, figsize=(11.2, 4.0))
         metric_specs = [
-            ("val_RMSE", "Validation RMSE", "#5d8aa8"),
-            ("test_RMSE_train_val", "Final Test RMSE", "#c08a5a"),
-            ("test_MAE_train_val", "Final Test MAE", "#7aa37a"),
+            ("val_RMSE", "验证集 RMSE", "#5d8aa8"),
+            ("test_RMSE_train_val", "最终测试集 RMSE", "#c08a5a"),
+            ("test_MAE_train_val", "最终测试集 MAE", "#7aa37a"),
         ]
         for ax, (metric, title, color) in zip(axes, metric_specs):
             ax.bar(rec["label"], rec[metric], color=color)
             ax.set_title(title)
-            ax.set_xlabel("Recommended dimension")
+            ax.set_xlabel("推荐维度")
             ax.tick_params(axis="x", rotation=20)
             for idx, value in enumerate(rec[metric]):
                 ax.text(idx, value, f"{value:.2f}", ha="center", va="bottom", fontsize=8)
-        fig.suptitle("Recommended Feature Dimensions for Downstream Models")
+        fig.suptitle("面向下游模型的推荐特征维度对比")
         fig.tight_layout()
         fig.savefig(fig_dir / "recommended_dimension_comparison.png", bbox_inches="tight")
         plt.close(fig)
@@ -583,11 +605,11 @@ def plot_all_outputs(
             bottom = np.zeros(len(pivot))
             for category in pivot.columns:
                 values = pivot[category].to_numpy()
-                ax.bar(pivot.index, values, bottom=bottom, label=category, color=palette.get(category, "#999999"))
+                ax.bar(pivot.index, values, bottom=bottom, label=_category_cn(category), color=palette.get(category, "#999999"))
                 bottom += values
-            ax.set_title("Feature-Family Coverage of Recommended Dimensions")
-            ax.set_xlabel("Recommended dimension")
-            ax.set_ylabel("Feature count")
+            ax.set_title("推荐维度中的特征类别覆盖情况")
+            ax.set_xlabel("推荐维度")
+            ax.set_ylabel("特征数量")
             ax.legend(ncol=3, fontsize=8)
             fig.tight_layout()
             fig.savefig(fig_dir / "recommended_dimension_category_coverage.png", bbox_inches="tight")
@@ -597,11 +619,11 @@ def plot_all_outputs(
     ordered = trials_df.sort_values("trial_number").copy()
     ordered["best_so_far"] = ordered["val_RMSE"].cummin()
     fig, ax = plt.subplots(figsize=(9, 4.8))
-    ax.scatter(ordered["trial_number"], ordered["val_RMSE"], s=18, alpha=0.65, color="#6a92b8", label="Trial RMSE")
-    ax.plot(ordered["trial_number"], ordered["best_so_far"], color="#b23a30", linewidth=1.8, label="Best so far")
-    ax.set_title("Optuna Optimization History")
-    ax.set_xlabel("Trial number")
-    ax.set_ylabel("Validation RMSE")
+    ax.scatter(ordered["trial_number"], ordered["val_RMSE"], s=18, alpha=0.65, color="#6a92b8", label="单次试验 RMSE")
+    ax.plot(ordered["trial_number"], ordered["best_so_far"], color="#b23a30", linewidth=1.8, label="截至当前最优")
+    ax.set_title("Optuna 搜索历史")
+    ax.set_xlabel("试验编号")
+    ax.set_ylabel("验证集 RMSE")
     ax.legend()
     fig.tight_layout()
     fig.savefig(fig_dir / "optuna_optimization_history.png", bbox_inches="tight")
@@ -609,7 +631,7 @@ def plot_all_outputs(
 
     # 4. Best vs full metrics
     metric_rows = []
-    for label, metrics in [("Best Top-K", best_test_metrics), ("Full 85", full_test_metrics)]:
+    for label, metrics in [("最佳 Top-K", best_test_metrics), ("完整 85 维", full_test_metrics)]:
         for metric in ["RMSE", "MAE", "R2"]:
             metric_rows.append({"model": label, "metric": metric, "value": metrics[metric]})
     metric_df = pd.DataFrame(metric_rows)
@@ -619,7 +641,7 @@ def plot_all_outputs(
         ax.bar(sub["model"], sub["value"], color=["#5d8aa8", "#c08a5a"])
         ax.set_title(metric)
         ax.tick_params(axis="x", rotation=15)
-    fig.suptitle("Final Test Metrics: Best Top-K vs Full 85 Features")
+    fig.suptitle("最终测试集指标：最佳 Top-K 与完整 85 维对比")
     fig.tight_layout()
     fig.savefig(fig_dir / "best_vs_full_metrics.png", bbox_inches="tight")
     plt.close(fig)
@@ -627,11 +649,12 @@ def plot_all_outputs(
     # 5. Best category distribution
     cat_counts = best_subset["category"].value_counts().reset_index()
     cat_counts.columns = ["category", "count"]
+    cat_counts["category_cn"] = cat_counts["category"].map(_category_cn)
     fig, ax = plt.subplots(figsize=(7, 4.6))
-    ax.bar(cat_counts["category"], cat_counts["count"], color="#7aa37a")
-    ax.set_title(f"Best Feature Subset Category Distribution (top_k={best_top_k})")
-    ax.set_xlabel("Feature category")
-    ax.set_ylabel("Count")
+    ax.bar(cat_counts["category_cn"], cat_counts["count"], color="#7aa37a")
+    ax.set_title(f"最佳特征子集类别分布（top_k={best_top_k}）")
+    ax.set_xlabel("特征类别")
+    ax.set_ylabel("数量")
     ax.tick_params(axis="x", rotation=25)
     fig.tight_layout()
     fig.savefig(fig_dir / "best_feature_category_distribution.png", bbox_inches="tight")
@@ -650,19 +673,19 @@ def plot_all_outputs(
     top_imp = final_imp.head(20).sort_values("importance")
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.barh(top_imp["feature"], top_imp["importance"], color="#6a92b8")
-    ax.set_title("Best Top-K Feature Importance, Top 20")
-    ax.set_xlabel("Importance")
+    ax.set_title("最佳 Top-K 子集特征重要性 Top 20")
+    ax.set_xlabel("重要性")
     fig.tight_layout()
     fig.savefig(fig_dir / "best_feature_importance.png", bbox_inches="tight")
     plt.close(fig)
 
     # 7. Prediction vs actual
     fig, ax = plt.subplots(figsize=(11, 4.8))
-    ax.plot(test_dates, y_test, label="Actual AQI", color="#1f2933", linewidth=1.5)
-    ax.plot(test_dates, best_pred, label=f"Best Top-{best_top_k}", color="#2f6f9f", linewidth=1.4)
-    ax.plot(test_dates, full_pred, label="Full 85", color="#c08a5a", linewidth=1.1, alpha=0.8)
-    ax.set_title("2019 Test Prediction: Actual vs Predicted")
-    ax.set_xlabel("Date")
+    ax.plot(test_dates, y_test, label="真实 AQI", color="#1f2933", linewidth=1.5)
+    ax.plot(test_dates, best_pred, label=f"最佳 Top-{best_top_k}", color="#2f6f9f", linewidth=1.4)
+    ax.plot(test_dates, full_pred, label="完整 85 维", color="#c08a5a", linewidth=1.1, alpha=0.8)
+    ax.set_title("2019 测试集预测对比：真实值 vs 预测值")
+    ax.set_xlabel("日期")
     ax.set_ylabel("AQI")
     ax.legend()
     fig.tight_layout()
@@ -674,22 +697,22 @@ def plot_all_outputs(
     fig, axes = plt.subplots(2, 2, figsize=(10, 7.2))
     axes[0, 0].scatter(best_pred, residuals, s=12, alpha=0.6, color="#5d8aa8")
     axes[0, 0].axhline(0, color="#b23a30", linestyle="--")
-    axes[0, 0].set_title("Residuals vs Predicted")
-    axes[0, 0].set_xlabel("Predicted AQI")
-    axes[0, 0].set_ylabel("Residual")
+    axes[0, 0].set_title("残差与预测值关系")
+    axes[0, 0].set_xlabel("预测 AQI")
+    axes[0, 0].set_ylabel("残差")
     axes[0, 1].plot(test_dates, residuals, color="#5d8aa8", linewidth=1.0)
     axes[0, 1].axhline(0, color="#b23a30", linestyle="--")
-    axes[0, 1].set_title("Residuals over Time")
-    axes[0, 1].set_xlabel("Date")
-    axes[0, 1].set_ylabel("Residual")
+    axes[0, 1].set_title("残差随时间变化")
+    axes[0, 1].set_xlabel("日期")
+    axes[0, 1].set_ylabel("残差")
     axes[1, 0].hist(residuals, bins=35, color="#7aa37a", alpha=0.8, edgecolor="white")
-    axes[1, 0].set_title("Residual Distribution")
-    axes[1, 0].set_xlabel("Residual")
+    axes[1, 0].set_title("残差分布")
+    axes[1, 0].set_xlabel("残差")
     abs_err = np.abs(residuals)
     axes[1, 1].plot(test_dates, abs_err, color="#c08a5a", linewidth=1.0)
-    axes[1, 1].set_title("Absolute Error over Time")
-    axes[1, 1].set_xlabel("Date")
-    axes[1, 1].set_ylabel("|Error|")
+    axes[1, 1].set_title("绝对误差随时间变化")
+    axes[1, 1].set_xlabel("日期")
+    axes[1, 1].set_ylabel("|误差|")
     fig.tight_layout()
     fig.savefig(fig_dir / "best_residual_analysis.png", bbox_inches="tight")
     plt.close(fig)
@@ -704,8 +727,8 @@ def plot_all_outputs(
     colors = ["#b23a30" if v < 0 else "#2f6f9f" for v in vec_df["value"]]
     ax.barh(vec_df["feature"], vec_df["value"], color=colors)
     ax.axvline(0, color="#333333", linewidth=0.8)
-    ax.set_title("One Sample Feature Vector: Top 25 Absolute Standardized Values")
-    ax.set_xlabel("Standardized feature value")
+    ax.set_title("单个样本特征向量：标准化绝对值 Top 25")
+    ax.set_xlabel("标准化后的特征值")
     fig.tight_layout()
     fig.savefig(fig_dir / "feature_vector_example.png", bbox_inches="tight")
     plt.close(fig)

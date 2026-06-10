@@ -57,11 +57,20 @@ TEST_START, TEST_END = "2019-01-01", "2019-12-31"
 
 
 def _configure_plot_style() -> None:
-    """Use a restrained matplotlib/seaborn style suitable for report figures."""
+    """Use a restrained matplotlib/seaborn style with Chinese font fallback."""
+    sns.set_theme(style="whitegrid", font_scale=0.9)
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
-            "font.sans-serif": ["Arial", "Helvetica", "Microsoft YaHei", "SimHei", "DejaVu Sans"],
+            "font.sans-serif": [
+                "Noto Sans CJK SC",
+                "Noto Sans CJK JP",
+                "Noto Sans CJK TC",
+                "Microsoft YaHei",
+                "SimHei",
+                "Arial Unicode MS",
+                "DejaVu Sans",
+            ],
             "svg.fonttype": "none",
             "pdf.fonttype": 42,
             "font.size": 8,
@@ -72,7 +81,6 @@ def _configure_plot_style() -> None:
             "axes.unicode_minus": False,
         }
     )
-    sns.set_theme(style="whitegrid", font_scale=0.9)
 
 
 def _as_path(path: Optional[str | Path], default: Path) -> Path:
@@ -637,13 +645,13 @@ def _plot_eda_timeseries(clean_df: pd.DataFrame, figure_dir: Path) -> None:
     for ax, col, color in zip(axes_flat, pollutants, colors):
         ax.plot(clean_df.index, clean_df[col], color=color, linewidth=0.35, alpha=0.45)
         monthly = clean_df[col].resample("M").mean()
-        ax.plot(monthly.index, monthly, color=color, linewidth=1.8, label="Monthly mean")
+        ax.plot(monthly.index, monthly, color=color, linewidth=1.8, label="月均值")
         ax.set_title(col, loc="left", fontweight="bold")
-        ax.set_ylabel("Value")
+        ax.set_ylabel("浓度 / 指数值")
     axes_flat[-1].axis("off")
     handles, labels = axes_flat[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper right", bbox_to_anchor=(0.96, 0.96))
-    fig.suptitle("Daily Air Quality Time Series, 2013-2019", fontweight="bold")
+    fig.suptitle("2013-2019 年每日空气质量时间序列", fontweight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(figure_dir / "eda_timeseries.png", dpi=220, bbox_inches="tight")
     plt.close(fig)
@@ -655,9 +663,9 @@ def _plot_eda_seasonal_boxplot(clean_df: pd.DataFrame, figure_dir: Path) -> None
     fig, ax = plt.subplots(figsize=(8.5, 4.2))
     sns.boxplot(data=data, x="month", y=TARGET_COL, color="#8fb6c9", fliersize=2.0, ax=ax)
     monthly_mean = data.groupby("month")[TARGET_COL].mean()
-    ax.plot(np.arange(12), monthly_mean.values, color="#b13f2f", marker="o", linewidth=1.4, label="Mean")
-    ax.set_title("AQI Seasonal Distribution by Month", fontweight="bold")
-    ax.set_xlabel("Month")
+    ax.plot(np.arange(12), monthly_mean.values, color="#b13f2f", marker="o", linewidth=1.4, label="月平均值")
+    ax.set_title("AQI 按月份的季节性分布", fontweight="bold")
+    ax.set_xlabel("月份")
     ax.set_ylabel("AQI")
     ax.legend()
     fig.tight_layout()
@@ -681,7 +689,7 @@ def _plot_eda_correlation(clean_df: pd.DataFrame, figure_dir: Path) -> None:
         cbar_kws={"shrink": 0.75},
         ax=ax,
     )
-    ax.set_title("Pollutant Correlation Matrix", fontweight="bold")
+    ax.set_title("AQI 与污染物相关性矩阵", fontweight="bold")
     fig.tight_layout()
     fig.savefig(figure_dir / "eda_correlation_heatmap.png", dpi=240, bbox_inches="tight")
     plt.close(fig)
@@ -699,9 +707,9 @@ def _plot_lag_correlation(clean_df: pd.DataFrame, figure_dir: Path, max_lag: int
         subset = lag_df[lag_df["feature_source"] == col]
         ax.plot(subset["lag"], subset["corr"], linewidth=1.5, label=col)
     ax.axhline(0, color="#555555", linewidth=0.8)
-    ax.set_title("Lag Correlation with Target AQI", fontweight="bold")
-    ax.set_xlabel("Lag days before target")
-    ax.set_ylabel("Pearson correlation")
+    ax.set_title("不同历史滞后天数与目标日 AQI 的相关性", fontweight="bold")
+    ax.set_xlabel("目标日前的滞后天数")
+    ax.set_ylabel("皮尔逊相关系数")
     ax.legend(ncol=4, fontsize=7)
     fig.tight_layout()
     fig.savefig(figure_dir / "feature_lag_correlation.png", dpi=240, bbox_inches="tight")
@@ -711,11 +719,11 @@ def _plot_lag_correlation(clean_df: pd.DataFrame, figure_dir: Path, max_lag: int
 def _feature_groups(metadata: pd.DataFrame, feature_cols: Sequence[str]) -> Dict[str, List[str]]:
     by_category = metadata.set_index("feature")["category"].to_dict()
     groups = {
-        "Time": [f for f in feature_cols if by_category.get(f) == "time"],
-        "Lag": [f for f in feature_cols if by_category.get(f) == "lag"],
-        "Rolling/Trend": [f for f in feature_cols if by_category.get(f) in {"rolling", "trend"}],
-        "Composite": [f for f in feature_cols if by_category.get(f) == "composite"],
-        "All safe features": list(feature_cols),
+        "时间特征": [f for f in feature_cols if by_category.get(f) == "time"],
+        "滞后特征": [f for f in feature_cols if by_category.get(f) == "lag"],
+        "移动统计/趋势特征": [f for f in feature_cols if by_category.get(f) in {"rolling", "trend"}],
+        "复合污染特征": [f for f in feature_cols if by_category.get(f) == "composite"],
+        "全部无泄漏特征": list(feature_cols),
     }
     return {k: v for k, v in groups.items() if v}
 
@@ -738,10 +746,10 @@ def _plot_feature_group_ablation(
     fig, axes = plt.subplots(1, 2, figsize=(9.4, 4.1))
     plot_df = result.sort_values("RMSE", ascending=False)
     axes[0].barh(plot_df["feature_group"], plot_df["RMSE"], color="#6f9fb8")
-    axes[0].set_title("Feature Group RMSE", fontweight="bold")
+    axes[0].set_title("不同特征组的 RMSE", fontweight="bold")
     axes[0].set_xlabel("RMSE (AQI)")
     axes[1].barh(plot_df["feature_group"], plot_df["R2"], color="#b8875f")
-    axes[1].set_title("Feature Group R2", fontweight="bold")
+    axes[1].set_title("不同特征组的 R2", fontweight="bold")
     axes[1].set_xlabel("R2")
     fig.tight_layout()
     fig.savefig(figure_dir / "feature_group_ablation.png", dpi=240, bbox_inches="tight")
@@ -774,8 +782,8 @@ def _plot_feature_importance_rf(
     top = importance.head(20).sort_values("importance")
     fig, ax = plt.subplots(figsize=(8.0, 6.2))
     ax.barh(top["feature"], top["importance"], color="#7a9f6e")
-    ax.set_title("Random Forest Feature Importance, Top 20", fontweight="bold")
-    ax.set_xlabel("Importance")
+    ax.set_title("随机森林特征重要性 Top 20", fontweight="bold")
+    ax.set_xlabel("重要性")
     fig.tight_layout()
     fig.savefig(figure_dir / "feature_importance_rf.png", dpi=240, bbox_inches="tight")
     plt.close(fig)
@@ -784,12 +792,12 @@ def _plot_feature_importance_rf(
 
 def _plot_data_flow(figure_dir: Path) -> None:
     steps = [
-        ("Raw Excel", "2013-2019 daily AQI\nand pollutant values"),
-        ("Clean", "Interpolate missing values\nclip impossible negatives"),
-        ("QC Flags", "IQR outlier markers\nkept as historical flags"),
-        ("Safe Features", "shift(1) lag, rolling,\ntrend, composite features"),
-        ("Split + Scale", "2014-2017 train\n2018 val, 2019 test"),
-        ("Handoff", "CSV for ML\nNPZ for LSTM"),
+        ("原始 Excel", "2013-2019 每日 AQI\n及主要污染物浓度"),
+        ("数据清洗", "线性插补缺失值\n检查并修正负浓度"),
+        ("质量标记", "IQR 异常值标记\n保留为历史质量特征"),
+        ("无泄漏特征", "shift(1) 后构造滞后\n移动统计、趋势与复合特征"),
+        ("切分与标准化", "2014-2017 训练集\n2018 验证集，2019 测试集"),
+        ("建模交接", "传统模型使用 CSV\nLSTM 使用 NPZ 序列"),
     ]
     fig, ax = plt.subplots(figsize=(11.0, 3.2))
     ax.axis("off")
@@ -812,7 +820,7 @@ def _plot_data_flow(figure_dir: Path) -> None:
                 xytext=(x + 0.07, y),
                 arrowprops=dict(arrowstyle="->", color="#4f5b62", linewidth=1.1),
             )
-    ax.set_title("Processed Data Flow for Model Handoff", fontweight="bold", pad=12)
+    ax.set_title("从原始数据到建模数据包的数据处理流程", fontweight="bold", pad=12)
     fig.tight_layout()
     fig.savefig(figure_dir / "processed_data_flow.png", dpi=240, bbox_inches="tight")
     plt.close(fig)

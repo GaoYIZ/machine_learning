@@ -1,40 +1,58 @@
-# AQI Prediction: Feature Engineering + Model Integration
+# 空气质量 AQI 预测：特征工程与模型对接项目
 
-This repository is a Colab-friendly version of the AQI prediction group project.
+这是一个面向 Google Colab 的小组作业项目版本，包含：
 
-It includes:
+- 2013-2019 年每日空气质量原始数据；
+- 无泄漏数据处理与特征工程；
+- Optuna 特征维度搜索；
+- `top5/top10/top14/top85` 推荐维度；
+- 模型同学的多模型接入实验；
+- 中文图表与评估结果输出。
 
-- raw daily AQI dataset from 2013 to 2019;
-- leakage-safe feature engineering;
-- Optuna top-k feature dimension search;
-- teammate model benchmark integration;
-- scripts that can run end-to-end on Google Colab.
+## Colab 推荐用法
 
-## Quick Start In Colab
+本仓库不放 notebook。请使用本地文件：
 
-Use the local notebook provided separately by the project owner, or run these commands in a Colab cell:
+```text
+E:\aq_project\AQI_Colab_Run.ipynb
+```
+
+把它手动上传到 Google Colab 后，从上到下运行即可。notebook 已包含：
+
+- GitHub 拉取项目；
+- apt 安装中文字体；
+- pip 安装依赖；
+- 生成特征工程图、Optuna 图、模型评估图；
+- 展示评估表和任务完成度表；
+- 打包下载 `outputs/`。
+
+如果不用 notebook，也可以在 Colab 单元格里手动执行：
 
 ```python
+!apt-get -qq update
+!apt-get -qq install -y fonts-noto-cjk
+!rm -rf ~/.cache/matplotlib
+
 !git clone https://github.com/GaoYIZ/machine_learning.git
 %cd machine_learning
 !pip -q install -r requirements-colab.txt
 !python scripts/run_all.py --device cuda --top-k 5 10 14 85
 ```
 
-If Colab GPU is unavailable, the script falls back to CPU for BiLSTM.
+如果 Colab 没有分配 GPU，脚本会自动回退到 CPU。
 
-## Outputs
+## 主要输出
 
-After running:
+运行完成后会生成：
 
 ```text
-outputs/processed/
-outputs/feature_figures/
-outputs/optuna/
-outputs/model_integration/
+outputs/processed/          处理后 CSV、特征说明、泄漏审计、LSTM 序列
+outputs/feature_figures/    数据处理与特征工程中文图
+outputs/optuna/             Optuna 维度搜索结果和图
+outputs/model_integration/  模型接入结果、预测图、残差图
 ```
 
-Important files:
+关键结果文件：
 
 ```text
 outputs/optuna/recommended_dimension_results.csv
@@ -42,44 +60,37 @@ outputs/model_integration/results/best_by_dimension.csv
 outputs/model_integration/results/all_model_comparison_my_features.csv
 ```
 
-## Recommended Dimensions
+## 输入形状
 
-The pipeline evaluates these feature dimensions:
-
-```text
-top5   validation-best low-dimensional feature subset
-top10  one-day pollution state subset
-top14  balanced feature-family subset
-top85  full engineered feature baseline
-```
-
-Traditional models use:
+传统模型使用：
 
 ```text
-X = [samples, top_k]
+X = [样本数, top_k]
 ```
 
-Sequence models use:
+LSTM 序列数据使用：
 
 ```text
-X_seq = [samples, 14, top_k]
+X_seq = [样本数, 14, top_k]
 ```
 
-## Main Commands
+其中 `top_k` 是 Optuna 和特征排序后推荐的特征维度。
 
-Build feature package only:
+## 单独运行命令
+
+只生成特征数据包和 Optuna 结果：
 
 ```bash
 python scripts/run_feature_pipeline.py
 ```
 
-Run teammate model benchmark with generated feature package:
+只运行模型接入实验：
 
 ```bash
 python scripts/run_model_integration.py --device cuda --top-k 5 10 14 85
 ```
 
-Run everything:
+一键运行全部流程：
 
 ```bash
 python scripts/run_all.py --device cuda --top-k 5 10 14 85

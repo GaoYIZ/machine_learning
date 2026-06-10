@@ -103,7 +103,11 @@ def run_one_dimension(top_k: int, package: Dict[str, object], device: str, skip_
 
     best = comparison.sort_values("RMSE_AQI").iloc[0].to_dict()
     if not skip_plots:
-        plot_model_comparison(comparison, str(fig_dir / f"model_comparison_top{top_k}.png"), title=f"Models with top{top_k} myProject features")
+        plot_model_comparison(
+            comparison,
+            str(fig_dir / f"model_comparison_top{top_k}.png"),
+            title=f"接入我的特征工程 top{top_k} 后的模型表现对比",
+        )
         save_best_plots(results, str(best["Model"]), y_test, package["test"].index, target_mean, target_std, fig_dir)
     print(f"[Model] top{top_k} best={best['Model']} RMSE={best['RMSE_AQI']:.4f} MAE={best['MAE_AQI']:.4f} R2={best['R2']:.4f}")
     return comparison, best
