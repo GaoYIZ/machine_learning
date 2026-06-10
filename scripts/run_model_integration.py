@@ -42,9 +42,29 @@ def parse_args() -> argparse.Namespace:
 
 def load_recommended_features(top_k: int) -> List[str]:
     path = OPTUNA_DIR / f"recommended_top{top_k}_features.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"Missing feature list: {path}. Run scripts/run_feature_pipeline.py first.")
-    return pd.read_csv(path)["feature"].tolist()
+    if path.exists():
+        return pd.read_csv(path)["feature"].tolist()
+
+    # Some notebook experiments ask for extra comparison dimensions such as
+    # top5/top10 even when Optuna's formal recommendation set is top11/top14/top85.
+    # In that case, derive the feature subset from the saved RF ranking instead
+    # of stopping the whole model-integration run.
+    ranking_path = OPTUNA_DIR / "ranked_features_rf.csv"
+    if not ranking_path.exists():
+        raise FileNotFoundError(
+            f"Missing feature list: {path}, and fallback ranking is also missing: {ranking_path}. "
+            "Run scripts/run_feature_pipeline.py first."
+        )
+    ranking = pd.read_csv(ranking_path)
+    if "feature" not in ranking.columns:
+        raise ValueError(f"Fallback ranking file has no 'feature' column: {ranking_path}")
+    if top_k < 1 or top_k > len(ranking):
+        raise ValueError(f"top_k={top_k} is outside the available feature range 1..{len(ranking)}")
+
+    selected = ranking.head(top_k).copy()
+    selected.to_csv(path, index=False, encoding="utf-8-sig")
+    print(f"[Model] generated fallback feature list for top{top_k}: {path}")
+    return selected["feature"].tolist()
 
 
 def scale_target(y_train_raw: np.ndarray, y_val_raw: np.ndarray, y_test_raw: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:

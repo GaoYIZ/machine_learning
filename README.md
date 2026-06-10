@@ -5,7 +5,7 @@
 - 2013-2019 年每日空气质量原始数据；
 - 无泄漏数据处理与特征工程；
 - Optuna 特征维度搜索；
-- `top5/top10/top14/top85` 推荐维度；
+- `top5/top10/top_best/top14/top85` 推荐对接维度；
 - 模型同学的多模型接入实验；
 - 中文图表与评估结果输出。
 
@@ -36,7 +36,7 @@ E:\aq_project\AQI_Colab_Run.ipynb
 !git clone https://github.com/GaoYIZ/machine_learning.git
 %cd machine_learning
 !pip -q install -r requirements-colab.txt
-!python scripts/run_all.py --device cuda --top-k 5 10 14 85
+!python scripts/run_all.py --device cuda
 ```
 
 如果 Colab 没有分配 GPU，脚本会自动回退到 CPU。
@@ -84,14 +84,16 @@ X_seq = [样本数, 14, top_k]
 python scripts/run_feature_pipeline.py
 ```
 
-只运行模型接入实验：
+只运行模型接入实验，例如本次 Optuna 最优维度为 `top11` 时：
 
 ```bash
-python scripts/run_model_integration.py --device cuda --top-k 5 10 14 85
+python scripts/run_model_integration.py --device cuda --top-k 5 10 11 14 85
 ```
 
 一键运行全部流程：
 
 ```bash
-python scripts/run_all.py --device cuda --top-k 5 10 14 85
+python scripts/run_all.py --device cuda
 ```
+
+`run_all.py` 默认会先读取 Optuna 的 `best_top_k`，再自动跑 `top5/top10/top_best/top14/top85`。
