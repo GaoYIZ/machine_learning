@@ -33,6 +33,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-plots", action="store_true")
     parser.add_argument("--run-peak-optuna", action="store_true", help="Run the optional peak-focused Optuna tuning stage.")
     parser.add_argument("--peak-trials", type=int, default=50)
+    parser.add_argument("--run-tail-optuna", action="store_true", help="Run the optional double-tail Optuna tuning stage.")
+    parser.add_argument("--tail-trials", type=int, default=80)
     return parser.parse_args()
 
 
@@ -72,12 +74,26 @@ def main() -> None:
         if args.skip_plots:
             peak_cmd.append("--skip-plots")
         run(peak_cmd)
+    if args.run_tail_optuna:
+        tail_cmd = [
+            sys.executable,
+            "scripts/run_tail_optuna.py",
+            "--device",
+            args.device,
+            "--n-trials",
+            str(args.tail_trials),
+        ]
+        if args.skip_plots:
+            tail_cmd.append("--skip-plots")
+        run(tail_cmd)
     print("\nAll done. Main outputs:")
     print(PROJECT_ROOT / "outputs" / "processed")
     print(PROJECT_ROOT / "outputs" / "optuna")
     print(PROJECT_ROOT / "outputs" / "model_integration")
     if args.run_peak_optuna:
         print(PROJECT_ROOT / "outputs" / "peak_optuna")
+    if args.run_tail_optuna:
+        print(PROJECT_ROOT / "outputs" / "tail_optuna")
 
 
 if __name__ == "__main__":

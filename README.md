@@ -120,3 +120,42 @@ python scripts/run_all.py --device cuda --run-peak-optuna --peak-trials 50
 模型主结果使用统一测试窗口：由于 BiLSTM 的 14 天序列需要从测试集第 14 天开始预测，传统模型也会裁剪到同一段测试日期。旧混合口径结果保存在 `model_comparison_mixed_top{k}.csv`，只用于对照。
 
 峰值优化阶段不会改动数据处理和特征工程，也不会用测试集选参数。它只用验证集搜索模型超参数、峰值样本权重和持久性融合阈值，最后再在 2019 测试集上评估一次。
+
+## 双尾误差优化
+
+峰值优化后，如果发现低 AQI 日被整体预测偏高，可以继续运行“双尾优化”。这一阶段同时约束：
+
+- `AQI>=150` 高污染日的低估误差；
+- `AQI<=50` 低污染日的高估误差；
+- 最低 25% AQI 样本的平均误差；
+- 整体 RMSE 不明显变差。
+
+单独运行：
+
+```bash
+python scripts/run_tail_optuna.py --device cuda --n-trials 80
+```
+
+在一键流程末尾追加运行：
+
+```bash
+python scripts/run_all.py --device cuda --run-peak-optuna --peak-trials 50 --run-tail-optuna --tail-trials 80
+```
+
+主要输出：
+
+```text
+outputs/tail_optuna/tail_optuna_trials.csv
+outputs/tail_optuna/best_tail_params.json
+outputs/tail_optuna/best_tail_model_test_metrics.json
+outputs/tail_optuna/tail_model_comparison.csv
+outputs/tail_optuna/tail_predictions_test.csv
+outputs/tail_optuna/figures/双尾优化搜索历史.png
+outputs/tail_optuna/figures/高低AQI分箱误差对比.png
+outputs/tail_optuna/figures/低AQI散点图_优化前后.png
+outputs/tail_optuna/figures/高AQI散点图_优化前后.png
+outputs/tail_optuna/figures/预测值与真实值_双尾优化.png
+outputs/tail_optuna/figures/残差时间序列_低谷标注.png
+```
+
+最终报告建议同时给出三套模型定位：整体最佳模型、峰值优先模型、双尾均衡模型。双尾均衡模型不一定刷新最低 RMSE，它的价值在于减少“高值低估、低值高估”的两端偏差。
