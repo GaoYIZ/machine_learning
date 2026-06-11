@@ -324,7 +324,8 @@ def train_bilstm(X_train, y_train, X_val, y_val,
                  seq_len=14, hidden_dim=64, epochs=200,
                  lr=0.001, batch_size=32, patience=20,
                  device='cpu', sample_weight_train=None,
-                 seed: int = 42, model_label: str = 'M9 BiLSTM') -> Tuple[BiLSTMAttention, dict]:
+                 seed: int = 42, model_label: str = 'M9 BiLSTM',
+                 dropout: float = 0.2) -> Tuple[BiLSTMAttention, dict]:
     """BiLSTM + Attention 模型训练器"""
     set_torch_seed(seed)
     print(f"\n  [{model_label}] training (device={device}, seed={seed})...")
@@ -351,7 +352,7 @@ def train_bilstm(X_train, y_train, X_val, y_val,
 
     print(f"  [{model_label}] sequence shapes: X_train={tuple(Xt.shape)}, X_val={tuple(Xv.shape)}")
 
-    model = BiLSTMAttention(X_train.shape[2], hidden_dim).to(device)
+    model = BiLSTMAttention(X_train.shape[2], hidden_dim, dropout=dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=8

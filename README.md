@@ -8,6 +8,7 @@
 - `top5/top8/top10/top_best/top12/top14/top15/top20/top85` 推荐对接维度；
 - 模型同学的多模型接入实验；
 - 修复后的 BiLSTM `[样本数, 14, top_k]` 输入与峰值加权 BiLSTM；
+- 模型层 Optuna 调参与高污染峰值修正实验；
 - 中文图表与评估结果输出。
 
 ## Colab 推荐用法
@@ -51,6 +52,7 @@ outputs/processed/          处理后 CSV、特征说明、泄漏审计、LSTM �
 outputs/feature_figures/    数据处理与特征工程中文图
 outputs/optuna/             Optuna 维度搜索结果和图
 outputs/model_integration/  模型接入结果、预测图、残差图
+outputs/peak_optuna/        模型层 Optuna 调参与峰值修正结果
 ```
 
 关键结果文件：
@@ -61,6 +63,8 @@ outputs/model_integration/results/best_by_dimension.csv
 outputs/model_integration/results/all_model_comparison_my_features.csv
 outputs/model_integration/results/all_model_comparison_mixed_my_features.csv
 outputs/model_integration/results/all_peak_error_summary.csv
+outputs/peak_optuna/peak_model_comparison.csv
+outputs/peak_optuna/best_peak_model_test_metrics.json
 ```
 
 ## 输入形状
@@ -93,6 +97,12 @@ python scripts/run_feature_pipeline.py
 python scripts/run_model_integration.py --device cuda --top-k 5 8 10 11 12 14 15 20 85 --seq-len 14
 ```
 
+只运行峰值优化 Optuna 调参：
+
+```bash
+python scripts/run_peak_optuna.py --device cuda --n-trials 50
+```
+
 一键运行全部流程：
 
 ```bash
@@ -101,4 +111,12 @@ python scripts/run_all.py --device cuda
 
 `run_all.py` 默认会先读取 Optuna 的 `best_top_k`，再自动跑 `top5/top8/top10/top_best/top12/top14/top15/top20/top85`。如需改 LSTM 序列长度，可追加 `--seq-len 14`。
 
+如需在一键流程末尾追加峰值优化，可运行：
+
+```bash
+python scripts/run_all.py --device cuda --run-peak-optuna --peak-trials 50
+```
+
 模型主结果使用统一测试窗口：由于 BiLSTM 的 14 天序列需要从测试集第 14 天开始预测，传统模型也会裁剪到同一段测试日期。旧混合口径结果保存在 `model_comparison_mixed_top{k}.csv`，只用于对照。
+
+峰值优化阶段不会改动数据处理和特征工程，也不会用测试集选参数。它只用验证集搜索模型超参数、峰值样本权重和持久性融合阈值，最后再在 2019 测试集上评估一次。

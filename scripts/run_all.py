@@ -31,6 +31,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--seq-len", type=int, default=14)
     parser.add_argument("--skip-plots", action="store_true")
+    parser.add_argument("--run-peak-optuna", action="store_true", help="Run the optional peak-focused Optuna tuning stage.")
+    parser.add_argument("--peak-trials", type=int, default=50)
     return parser.parse_args()
 
 
@@ -58,10 +60,24 @@ def main() -> None:
     if args.skip_plots:
         cmd.append("--skip-plots")
     run(cmd)
+    if args.run_peak_optuna:
+        peak_cmd = [
+            sys.executable,
+            "scripts/run_peak_optuna.py",
+            "--device",
+            args.device,
+            "--n-trials",
+            str(args.peak_trials),
+        ]
+        if args.skip_plots:
+            peak_cmd.append("--skip-plots")
+        run(peak_cmd)
     print("\nAll done. Main outputs:")
     print(PROJECT_ROOT / "outputs" / "processed")
     print(PROJECT_ROOT / "outputs" / "optuna")
     print(PROJECT_ROOT / "outputs" / "model_integration")
+    if args.run_peak_optuna:
+        print(PROJECT_ROOT / "outputs" / "peak_optuna")
 
 
 if __name__ == "__main__":
