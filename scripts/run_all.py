@@ -35,6 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--peak-trials", type=int, default=50)
     parser.add_argument("--run-tail-optuna", action="store_true", help="Run the optional double-tail Optuna tuning stage.")
     parser.add_argument("--tail-trials", type=int, default=80)
+    parser.add_argument("--run-future-forecast", action="store_true", help="Run the optional 2020-01 scenario forecast stage.")
+    parser.add_argument("--build-final-package", action="store_true", help="Build README/PDF/PPT handoff materials under outputs/report.")
     return parser.parse_args()
 
 
@@ -86,6 +88,10 @@ def main() -> None:
         if args.skip_plots:
             tail_cmd.append("--skip-plots")
         run(tail_cmd)
+    if args.run_future_forecast:
+        run([sys.executable, "scripts/run_future_forecast.py"])
+    if args.build_final_package:
+        run([sys.executable, "scripts/build_final_report_package.py"])
     print("\nAll done. Main outputs:")
     print(PROJECT_ROOT / "outputs" / "processed")
     print(PROJECT_ROOT / "outputs" / "optuna")
@@ -94,6 +100,11 @@ def main() -> None:
         print(PROJECT_ROOT / "outputs" / "peak_optuna")
     if args.run_tail_optuna:
         print(PROJECT_ROOT / "outputs" / "tail_optuna")
+    if args.run_future_forecast:
+        print(PROJECT_ROOT / "outputs" / "future_forecast")
+    if args.build_final_package:
+        print(PROJECT_ROOT / "outputs" / "report")
+        print(PROJECT_ROOT / "outputs" / "ppt_assets")
 
 
 if __name__ == "__main__":

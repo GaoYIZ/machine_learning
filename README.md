@@ -159,3 +159,68 @@ outputs/tail_optuna/figures/残差时间序列_低谷标注.png
 ```
 
 最终报告建议同时给出三套模型定位：整体最佳模型、峰值优先模型、双尾均衡模型。双尾均衡模型不一定刷新最低 RMSE，它的价值在于减少“高值低估、低值高估”的两端偏差。
+
+## 项目演进路线
+
+报告和 PPT 建议不要只展示最终结果，而要讲清楚项目是怎样一步步优化出来的：
+
+```text
+经验/探索式 44 维候选特征
+  -> 根据 MSE/RMSE 初步关注 top10
+  -> Optuna GridSampler 遍历 top_k=5...85，验证集最优 top11
+  -> 多模型接入统一测试，整体最佳为 top10 + M9B_BiLSTM_PeakWeighted
+  -> 发现 AQI>=150 高污染峰值仍被低估
+  -> 模型层 Optuna + 峰值加权 + 持久性融合，得到峰值优先模型
+  -> 发现 AQI<=50 低谷可能被预测偏高
+  -> 双尾优化同时控制高峰低估和低谷高估
+  -> 形成整体最佳、峰值优先、双尾均衡三套推荐模型
+```
+
+正式文档中建议把“随机找的 44 维”写成“经验/探索式 44 维候选特征”，这样更符合课程报告表达。
+
+## 未来趋势情景预测与最终输出包
+
+补齐任务第 7 条时，运行：
+
+```bash
+python scripts/run_future_forecast.py
+```
+
+该脚本输出 2020 年 1 月 30 天 AQI 三种情景预测：
+
+```text
+outputs/future_forecast/future_forecast_scenarios.csv
+outputs/future_forecast/未来30天AQI情景预测.png
+outputs/future_forecast/未来预测区间与不确定性.png
+outputs/future_forecast/未来预测方法说明.md
+```
+
+由于原始数据没有未来天气、排放和污染物真实输入，预测结果必须写成“情景预测/趋势推演”，不能写成真实天气预报。
+
+生成给报告和 PPT 使用的最终整理包：
+
+```bash
+python scripts/build_final_report_package.py
+```
+
+主要输出：
+
+```text
+outputs/report/项目总说明_README.md
+outputs/report/项目总说明_README.pdf
+outputs/report/图表解释手册.md
+outputs/report/图表解释手册.pdf
+outputs/report/项目历程时间线.md
+outputs/report/阶段性结果对照表.csv
+outputs/report/任务要求完成度总表.csv
+outputs/report/PPT素材索引.csv
+outputs/report/论文报告写作素材索引.md
+outputs/report/最终结论摘要.md
+outputs/ppt_assets/
+```
+
+完整一键命令：
+
+```bash
+python scripts/run_all.py --device cuda --run-peak-optuna --peak-trials 50 --run-tail-optuna --tail-trials 80 --run-future-forecast --build-final-package
+```

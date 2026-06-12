@@ -10,3 +10,5 @@ xgboost
 lightgbm
 catboost
 tabulate
+reportlab
+pillow
